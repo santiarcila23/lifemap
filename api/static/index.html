@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LifeMap</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root { --bg:#fff; --fg:#111; --muted:#555; --line:#ddd; --card:#f6f6f6; --abierto:#1f77b4; --cerrado:#d62728; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#111; --fg:#eee; --muted:#aaa; --line:#333; --card:#1c1c1c; } }
+  :root[data-theme="dark"] { --bg:#111; --fg:#eee; --muted:#aaa; --line:#333; --card:#1c1c1c; }
+  body { margin:0; font-family: Arial, sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:12px 16px; border-bottom:1px solid var(--line); }
+  h1 { margin:0; font-size:20px; } header p { margin:4px 0 0; color:var(--muted); font-size:14px; }
+  main { display:grid; grid-template-columns: 1fr 360px; gap:0; min-height: calc(100vh - 62px); }
+  #mapa { min-height: 420px; }
+  aside { padding:12px 16px; border-left:1px solid var(--line); overflow:auto; font-size:14px; }
+  aside h2 { font-size:15px; margin:14px 0 6px; }
+  .card { background:var(--card); padding:8px 10px; border-radius:6px; margin-bottom:8px; }
+  code, a { font-size:13px; } a { color:var(--abierto); }
+  textarea { width:100%; box-sizing:border-box; height:60px; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } aside { border-left:0; border-top:1px solid var(--line); } #mapa { height: 55vh; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>LifeMap · reputación, ubicación y supervivencia de negocios</h1>
+  <p id="sub">Haga clic en el mapa: negocios a 1 km (azul abierto, rojo cerrado) y resumen de la zona a 2 km.</p>
+</header>
+<main>
+  <div id="mapa"></div>
+  <aside>
+    <h2>Zona seleccionada</h2>
+    <div id="zona" class="card">Haga clic en el mapa.</div>
+    <h2>Sentimiento de un texto (/predict)</h2>
+    <textarea id="txt">The food was delicious and the staff very friendly.</textarea>
+    <button id="btn">Clasificar</button>
+    <div id="pred" class="card" style="margin-top:6px">—</div>
+    <h2>Endpoints</h2>
+    <div class="card" id="links"></div>
+  </aside>
+</main>
+<script>
+const capa = L.layerGroup();
+const mapa = L.map('mapa').setView([27.9506, -82.4572], 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19, attribution: '© OpenStreetMap'}).addTo(mapa);
+capa.addTo(mapa);
+const fmt = (x, d=2) => x == null ? '—' : Number(x).toLocaleString('es-CO', {maximumFractionDigits: d});
+
+async function cargarMeta() {
+  try {
+    const m = await (await fetch('/meta')).json();
+    if (m.area) {
+      mapa.setView([m.area.lat, m.area.lon], 11);
+      document.getElementById('sub').textContent =
+        `${m.area.nombre} · ${m.area.familia} · ${fmt(m.negocios,0)} negocios, ${fmt(m.resenas,0)} reseñas. Haga clic en el mapa.`;
+    }
+    const c = m.area ? `lat=${m.area.lat}&lon=${m.area.lon}` : 'lat=27.9506&lon=-82.4572';
+    const ls = ['/health', `/businesses/near?${c}&radio=1000`, `/zones/summary?${c}&radio=2000`,
+      '/stats/closure?por=categoria', '/stats/closure?por=celda', '/predict?texto=great food', '/reports'];
+    document.getElementById('links').innerHTML = ls.map(u => `<div><a href="${u}" target="_blank">${u}</a></div>`).join('') +
+      '<div><code>POST /businesses/within</code> (GeoJSON Polygon)</div>';
+  } catch (e) { console.error(e); }
+}
+
+mapa.on('click', async (ev) => {
+  const {lat, lng} = ev.latlng;
+  capa.clearLayers();
+  L.circle([lat, lng], {radius: 1000, color: '#888', weight: 1, fill: false}).addTo(capa);
+  const near = await (await fetch(`/businesses/near?lat=${lat}&lon=${lng}&radio=1000&limit=200`)).json();
+  (near.negocios || []).forEach(n => {
+    L.circleMarker([n.lat, n.lon], {radius: 5, color: n.abierto ? '#1f77b4' : '#d62728', fillOpacity: .8})
+      .bindPopup(`<b>${n.nombre}</b><br>${n.categoria_principal} · ${n.estrellas}★<br>` +
+                 `${n.abierto ? 'Abierto (censurado)' : 'Cerrado (evento)'}<br>` +
+                 `Vida: ${fmt(n.vida.dias_negocio,0)} días · ${n.vida.n_resenas} reseñas<br>` +
+                 `Reseñas negativas: ${fmt(n.sentimiento && n.sentimiento.pct_negativas)} %`).addTo(capa);
+  });
+  const z = (await (await fetch(`/zones/summary?lat=${lat}&lon=${lng}&radio=2000`)).json()).resumen;
+  document.getElementById('zona').innerHTML = !z || !z.negocios ? 'Sin negocios en 2 km.' :
+    `<b>${z.negocios}</b> negocios (${z.cierres} cerrados) en 2 km<br>` +
+    `Tasa de cierre anual: <b>${fmt(z.tasa_cierre_anual)} %</b> ${z.confiable ? '' : '(pocos días-negocio)'}<br>` +
+    `Reseñas negativas: <b>${fmt(z.pct_resenas_negativas)} %</b> de ${fmt(z.resenas,0)}<br>` +
+    `Sentimiento medio (−1 a 1): ${fmt(z.sentimiento_medio, 3)} · estrellas ${fmt(z.estrellas_medias)}`;
+});
+
+document.getElementById('btn').onclick = async () => {
+  const r = await fetch('/predict', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                     body: JSON.stringify({texto: document.getElementById('txt').value})});
+  const j = await r.json();
+  document.getElementById('pred').innerHTML = j.error ? j.error :
+    `<b>${j.sentimiento}</b> · ` + Object.entries(j.probabilidades).map(([k, v]) => `${k} ${fmt(v*100,1)} %`).join(' · ');
+};
+cargarMeta();
+</script>
+</body>
+</html>

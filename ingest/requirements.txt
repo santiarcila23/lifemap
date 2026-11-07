@@ -1,0 +1,9 @@
+dask[dataframe]==2025.5.1
+distributed==2025.5.1
+pandas==2.2.3
+numpy==2.2.6
+pyarrow==20.0.0
+pymongo==4.10.1
+kaggle==1.7.4.5
+bokeh==3.7.3
+psutil==7.0.0

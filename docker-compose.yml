@@ -1,0 +1,255 @@
+# LifeMap: reputación, ubicación y supervivencia de negocios (Entrega 1)
+#
+#   docker compose up -d --build                    levanta todo y corre ingesta + Spark la primera vez
+#   docker compose --profile tunnel up -d tunnel    publica la API en la URL de ngrok
+#   docker compose --profile benchmark run --rm spark-balanceo   tabla de tiempos del balanceo
+#
+# Nombre de proyecto fijo para que Jenkins (que también usa docker compose a través del
+# socket de Docker) administre los mismos contenedores y volúmenes.
+name: lifemap
+
+x-spark: &spark
+  build:
+    context: ./spark
+  image: lifemap-spark:latest
+  user: root            # escribe Parquet, reportes y modelos en los volúmenes
+  volumes:
+    - data:/data
+    - models:/models
+  environment: &spark-env
+    MONGO_URI: mongodb://mongo:27017
+    MONGO_DB: ${MONGO_DB:-lifemap}
+    MIN_DIAS_NEGOCIO: ${MIN_DIAS_NEGOCIO:-36500}
+    FORCE_SPARK: ${FORCE_SPARK:-false}
+
+x-spark-job: &spark-job
+  <<: *spark
+  restart: "no"
+  depends_on:
+    ingest:
+      condition: service_completed_successfully
+    spark-worker:
+      condition: service_healthy
+
+x-dask: &dask
+  build:
+    context: ./ingest
+  image: lifemap-ingest:latest
+  volumes:
+    - data:/data
+
+x-api-env: &api-env
+  MONGO_URI: mongodb://mongo:27017
+  MONGO_DB: ${MONGO_DB:-lifemap}
+  SPARK_MASTER_UI: http://spark-master:8080
+  DASK_DASHBOARD: http://dask-scheduler:8787
+  MODELS_DIR: /models
+  REPORT_DIR: /data/reports
+
+x-api-health: &api-health
+  test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/ping', timeout=3)"]
+  interval: 10s
+  timeout: 5s
+  retries: 6
+  start_period: 10s
+
+services:
+  # ---------------------------------------------------------------- MongoDB
+  mongo:
+    image: mongo:7.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MONGO_HOST_PORT:-27020}:27017"   # solo local, para MongoDB Compass
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # ---------------------------------------------------------------- Spark
+  spark-master:
+    <<: *spark
+    restart: unless-stopped
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master",
+              "--host", "spark-master", "--port", "7077", "--webui-port", "8080"]
+    ports:
+      - "${SPARK_UI_PORT:-8082}:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  spark-worker:
+    <<: *spark
+    restart: unless-stopped
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker",
+              "spark://spark-master:7077", "--webui-port", "8081",
+              "--cores", "${SPARK_WORKER_CORES:-2}", "--memory", "${SPARK_WORKER_MEMORY:-2g}"]
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8081"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Trabajos de Spark (se ejecutan y terminan)
+  spark-mapreduce:
+    <<: *spark-job
+    command: ["bash", "/opt/jobs/submit.sh", "mapreduce"]
+
+  spark-sentimiento:
+    <<: *spark-job
+    command: ["bash", "/opt/jobs/submit.sh", "sentimiento"]
+    environment:
+      <<: *spark-env
+      MAX_TRAIN: ${MAX_TRAIN:-0}
+
+  spark-balanceo:
+    <<: *spark-job
+    profiles: ["benchmark"]
+    command: ["bash", "/opt/jobs/submit.sh", "balanceo"]
+    environment:
+      <<: *spark-env
+      PARTICIONES: ${PARTICIONES:-2,8,32,200}
+      REPETICIONES: ${REPETICIONES:-3}
+
+  # ---------------------------------------------------------------- Dask
+  dask-scheduler:
+    <<: *dask
+    restart: unless-stopped
+    command: ["dask", "scheduler", "--host", "0.0.0.0", "--dashboard-address", ":8787"]
+    ports:
+      - "${DASK_UI_PORT:-8788}:8787"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8787/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  dask-worker:
+    <<: *dask
+    restart: unless-stopped
+    command: ["sh", "-c",
+              "dask worker tcp://dask-scheduler:8786 --nworkers 1 --nthreads $${DASK_WORKER_THREADS} --memory-limit $${DASK_WORKER_MEMORY} --dashboard-address :8790"]
+    environment:
+      DASK_WORKER_THREADS: ${DASK_WORKER_THREADS:-2}
+      DASK_WORKER_MEMORY: ${DASK_WORKER_MEMORY:-2GiB}
+    depends_on:
+      dask-scheduler:
+        condition: service_healthy
+    deploy:
+      replicas: 2       # mínimo exigido: dos workers
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8790/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Ingesta (se ejecuta y termina): Kaggle -> Dask -> MongoDB + Parquet
+  ingest:
+    <<: *dask
+    command: ["python", "-u", "ingest.py"]
+    restart: "no"
+    environment:
+      KAGGLE_USERNAME: ${KAGGLE_USERNAME:-}
+      KAGGLE_KEY: ${KAGGLE_KEY:-}
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB: ${MONGO_DB:-lifemap}
+      DASK_SCHEDULER: tcp://dask-scheduler:8786
+      FORCE_INGEST: ${FORCE_INGEST:-false}
+      AREA_NAME: ${AREA_NAME:-Tampa, FL}
+      AREA_LAT: ${AREA_LAT:-27.9506}
+      AREA_LON: ${AREA_LON:--82.4572}
+      AREA_RADIUS_KM: ${AREA_RADIUS_KM:-45}
+      CATEGORY_FAMILY: ${CATEGORY_FAMILY:-Restaurants}
+      GENERIC_CATEGORIES: ${GENERIC_CATEGORIES:-Restaurants,Food}
+    depends_on:
+      mongo:
+        condition: service_healthy
+      dask-worker:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------- API
+  api:
+    build:
+      context: ./api
+      args:
+        APP_VERSION: ${APP_VERSION:-local}
+        GIT_COMMIT: ${GIT_COMMIT:-local}
+    image: lifemap-api:latest
+    restart: unless-stopped
+    environment: *api-env
+    volumes:
+      - data:/data:ro
+      - models:/models:ro
+    ports:
+      - "${API_PORT:-5050}:5000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck: *api-health
+
+  # Instancia candidata: Jenkins la prueba antes de desplegar
+  api-staging:
+    build:
+      context: ./api
+      args:
+        APP_VERSION: ${APP_VERSION:-local}
+        GIT_COMMIT: ${GIT_COMMIT:-local}
+    image: lifemap-api:candidate
+    profiles: ["ci"]
+    environment: *api-env
+    volumes:
+      - data:/data:ro
+      - models:/models:ro
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck: *api-health
+
+  # ---------------------------------------------------------------- URL pública (ngrok)
+  tunnel:
+    image: ngrok/ngrok:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: ["http", "--url=${NGROK_DOMAIN:-sin-configurar.ngrok-free.app}", "api:5000"]
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    ports:
+      - "127.0.0.1:4040:4040"    # panel local de ngrok
+    depends_on:
+      - api
+
+  # ---------------------------------------------------------------- Jenkins
+  jenkins:
+    build:
+      context: ./jenkins
+    image: lifemap-jenkins:latest
+    restart: unless-stopped
+    user: root          # necesario para usar el socket de Docker del host
+    ports:
+      - "${JENKINS_PORT:-8083}:8080"
+    environment:
+      JENKINS_ADMIN_ID: ${JENKINS_ADMIN_ID:-admin}
+      JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD:?Defina JENKINS_ADMIN_PASSWORD en el archivo .env}
+      KAGGLE_USERNAME: ${KAGGLE_USERNAME:-}
+      KAGGLE_KEY: ${KAGGLE_KEY:-}
+      GIT_REPO_URL: ${GIT_REPO_URL:-https://github.com/USUARIO/lifemap.git}
+      GIT_BRANCH: ${GIT_BRANCH:-main}
+      JENKINS_URL: ${JENKINS_URL:-http://localhost:8083/}
+      MONGO_DB: ${MONGO_DB:-lifemap}
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  mongo_data:
+  data:
+  models:
+  jenkins_home:

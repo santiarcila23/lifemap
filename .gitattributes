@@ -1,0 +1,4 @@
+# Los scripts se ejecutan dentro de contenedores Linux: siempre con fin de línea LF
+* text=auto eol=lf
+*.png binary
+*.jpg binary
