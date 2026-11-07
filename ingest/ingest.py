@@ -84,11 +84,41 @@ def find_file(name: str) -> str | None:
     return hits[0] if hits else None
 
 
+def ensure_plain(path: str) -> str:
+    """Kaggle puede entregar el archivo comprimido aunque se llame .json: se revisa la firma.
+
+    ZIP empieza por 'PK\x03\x04' y gzip por 0x1f 0x8b. Si lo está, se descomprime en su lugar.
+    """
+    with open(path, "rb") as f:
+        firma = f.read(4)
+    name = os.path.basename(path)
+    if firma[:2] == b"PK":
+        tmp = path + ".zip"
+        os.replace(path, tmp)
+        log(f"{name} venía en ZIP; descomprimiendo ...")
+        with zipfile.ZipFile(tmp) as zf:
+            miembros = [m for m in zf.namelist() if not m.endswith("/")]
+            elegido = next((m for m in miembros if os.path.basename(m) == name), miembros[0])
+            with zf.open(elegido) as src, open(path, "wb") as dst:
+                shutil.copyfileobj(src, dst, 16 * 1024 * 1024)
+        os.remove(tmp)
+    elif firma[:2] == b"\x1f\x8b":
+        import gzip
+        tmp = path + ".gz"
+        os.replace(path, tmp)
+        log(f"{name} venía en gzip; descomprimiendo ...")
+        with gzip.open(tmp, "rb") as src, open(path, "wb") as dst:
+            shutil.copyfileobj(src, dst, 16 * 1024 * 1024)
+        os.remove(tmp)
+    return path
+
+
 def download(name: str) -> str:
     """Descarga un archivo del dataset con la API de Kaggle (si no está ya descargado)."""
     os.makedirs(CFG["raw_dir"], exist_ok=True)
     path = find_file(name)
     if path and not CFG["force"]:
+        path = ensure_plain(path)
         log(f"Ya descargado: {path} ({os.path.getsize(path) / 1e9:.2f} GB)")
         return path
     if not (os.environ.get("KAGGLE_USERNAME") and os.environ.get("KAGGLE_KEY")):
@@ -112,6 +142,7 @@ def download(name: str) -> str:
     path = find_file(name)
     if not path:
         sys.exit(f"ERROR: no se encontró {name} después de descargar")
+    path = ensure_plain(path)
     log(f"Listo en {time.time() - t0:.0f} s: {path} ({os.path.getsize(path) / 1e9:.2f} GB)")
     return path
 
