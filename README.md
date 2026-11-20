@@ -1,6 +1,9 @@
 # LifeMap: reputación, ubicación y supervivencia de negocios
 
-Proyecto final de Big Data (IUE, 2026-2), **Entrega 1**: plataforma batch con el texto de las reseñas clasificado, la vida de cada negocio construida y las tasas de cierre calculadas con MapReduce, desplegada en una URL pública con Jenkins.
+Proyecto final de Big Data (IUE, 2026-2), en dos entregas sobre el mismo sistema:
+
+- **Entrega 1:** plataforma batch con el texto de las reseñas clasificado, la vida de cada negocio construida y las tasas de cierre calculadas con MapReduce, desplegada en una URL pública con Jenkins.
+- **Entrega 2:** Kafka conectado a la plataforma; las reseñas posteriores a la fecha de corte se clasifican en tiempo real, se agregan en ventanas por celda para detectar *hotspots*, se estiman curvas de supervivencia y se emiten alertas de riesgo de cierre por ubicación.
 
 **Equipo:** Santiago Arcila Gutiérrez, Alejandro Restrepo Uribe, Natalia Florez Pérez
 **Docente:** Andrés Felipe Hernández Marulanda
@@ -14,7 +17,8 @@ Proyecto final de Big Data (IUE, 2026-2), **Entrega 1**: plataforma batch con el
 |---|---|
 | `/` | Mapa: clic en un punto para ver negocios a 1 km y el resumen de la zona a 2 km |
 | `/health` | Estado de MongoDB, Spark, Dask, la API y el modelo, con el **hash del commit desplegado** |
-| `/reports` | Reportes de la ingesta, el MapReduce, el modelo y el balanceo (JSON) |
+| `/reports` | Reportes de la ingesta, el MapReduce, el modelo, el balanceo, el riesgo y la supervivencia (JSON) |
+| `/` → *En vivo* | Capas de alertas de riesgo y de celdas (hotspots) que se actualizan cada 10 s durante la demo |
 
 ## Arquitectura
 
@@ -35,6 +39,10 @@ flowchart LR
   J1 & J3 -->|conector MongoDB| M
   J2 -->|modelo| MO[(volumen /models)]
   M & MO --> A[API Flask]
+  V -->|reseñas posteriores a T| P[producer<br/>reloj acelerado] -->|topic reviews<br/>3 particiones, clave business_id| KF[(Kafka KRaft)]
+  KF --> ST[Spark Structured Streaming<br/>sentimiento + ventanas + riesgo] -->|reviews_stream, ventanas_celda,<br/>riesgo_negocios, alerts| M
+  MO --> ST
+  A --> PBI[Power BI]
   A --> T[ngrok<br/>URL pública]
   G[GitHub main] -->|pollSCM 2 min| JK[Jenkins] -->|build, pytest, deploy| A
 ```
@@ -48,6 +56,10 @@ Todo corre en un solo `docker-compose.yml` (proyecto `lifemap`):
 | `dask-scheduler`, `dask-worker` ×2 | Ingesta y limpieza distribuida | 8788 (UI) |
 | `ingest` | Descarga de Kaggle, limpieza con Dask, vida de los negocios, carga a MongoDB | — |
 | `spark-mapreduce`, `spark-sentimiento`, `spark-balanceo` | Trabajos de Spark | — |
+| `kafka`, `kafka-init` | Kafka 3.8 en modo KRaft; `kafka-init` crea el topic `reviews` con 3 particiones | — |
+| `spark-riesgo`, `spark-supervivencia` | Modelo de riesgo de cierre y curvas de Kaplan-Meier (Entrega 2) | — |
+| `spark-streaming` | Structured Streaming: clasifica, agrega ventanas y emite alertas (siempre arriba) | — |
+| `producer` | Publica en Kafka las reseñas posteriores a T con reloj acelerado (perfil `demo`) | — |
 | `api` | API Flask (gunicorn) | 5050 |
 | `tunnel` | ngrok: publica la API en la URL fija del equipo | 127.0.0.1:4040 |
 | `jenkins` | CI/CD: construye, prueba y despliega al integrar a main | 8083 |
@@ -56,7 +68,7 @@ Los trabajos de ingesta y de Spark se ejecutan una vez y terminan. Si sus result
 
 ## Levantar el sistema desde cero
 
-Requisitos del servidor: Docker Desktop con **al menos 8 GB de RAM** asignados y **25 GB libres** en disco (Yelp descomprimido pesa unos 9 GB), y Git.
+Requisitos del servidor: Docker Desktop con **al menos 10 GB de RAM** asignados y **25 GB libres** en disco (Yelp descomprimido pesa unos 9 GB), y Git.
 
 ```powershell
 # 1. Clonar
@@ -79,6 +91,9 @@ docker compose --profile benchmark run --rm spark-balanceo
 
 # 6. Publicar la API en la URL pública
 docker compose --profile tunnel up -d tunnel
+
+# 7. Demo de la Entrega 2: publicar en Kafka las reseñas posteriores a la fecha de corte
+docker compose --profile demo run --rm producer
 ```
 
 Comprobar: http://localhost:5050/health en el servidor y `https://strategy-chowtime-unified.ngrok-free.dev/health` desde cualquier lugar.
@@ -144,6 +159,73 @@ curl -X POST "https://strategy-chowtime-unified.ngrok-free.dev/predict" -H "Cont
 - **Modelos guardados:** en `/models/sentiment_nb`, `/models/sentiment_lr` y `/models/sentiment_v1` (el mejor por F1 macro, para la Entrega 2).
 - **`/predict`:** no carga Spark. Replica en Python el mismo `HashingTF` (MurmurHash3, semilla 42) con los pesos exportados, y el trabajo de Spark verifica que ambas predicciones coinciden.
 
+## Entrega 2: streaming, supervivencia y alerta temprana
+
+### Fecha de corte y productor
+
+- **T = 2021-01-01** (`FECHA_CORTE`). Yelp termina el 19 de enero de 2022, así que de T a T + 12 meses queda completo dentro de los datos (lo necesita la etiqueta de riesgo).
+- El modelo de sentimiento (`sentiment_v1`) y el de riesgo se entrenan **solo con reseñas anteriores a T**. Si `FECHA_CORTE` cambia, los trabajos se repiten solos.
+- `producer` publica las reseñas con fecha ≥ T **en orden de fecha**, con clave `business_id`, en el topic `reviews` (3 particiones). Velocidad: un mes de reseñas cada `SEGUNDOS_POR_MES` segundos (10 por defecto).
+
+```powershell
+docker compose --profile demo run --rm producer                              # todo el año, 1 mes cada 10 s
+docker compose --profile demo run --rm -e SEGUNDOS_POR_MES=5 producer        # más rápido
+docker compose --profile demo run --rm -e MAX_MENSAJES=500 producer          # solo 500 mensajes
+```
+
+### Streaming (`spark-streaming`)
+
+- Lee `reviews` con Structured Streaming y **carga** `sentiment_v1` (no lo reentrena). Cada reseña queda en `reviews_stream` con su predicción, su probabilidad y la marca `procesado_en`.
+- **Ventanas:** 30 días por celda de geohash sobre `date` (tiempo del evento), con **watermark de 7 días**. Cada ventana se guarda en `ventanas_celda` con el polígono de su celda (índice 2dsphere).
+- **Hotspot:** el % de reseñas negativas sube **más de 15 puntos** frente a la ventana anterior de la misma celda, con **al menos 30 reseñas**. Con 30 reseñas y un 20 % negativo típico, el error estándar del porcentaje es √(0,2·0,8/30) ≈ 7,3 puntos; 15 puntos son unos 2 errores estándar, así que un salto así difícilmente es casualidad.
+- **Alertas:** en cada micro-lote (`foreachBatch`) se actualizan las variables de los negocios que recibieron reseñas, se puntúan con `riesgo_v1` y los que superan el umbral quedan en `alerts` con geometría, probabilidad y fecha.
+- Cada 5 s guarda en `stream_estado` los offsets procesados frente a los de Kafka: así `/health` muestra el **retraso del consumidor**.
+- Repetir la demo desde T: `docker compose stop spark-streaming`, `docker compose --profile herramientas run --rm spark-reinicio`, `docker compose up -d spark-streaming`.
+
+### Supervivencia (`spark-supervivencia`)
+
+- Kaplan-Meier por **categoría principal** y por **zona** (polígonos de `zonas.py` consultados con `$geoWithin`).
+- **Censura:** los negocios abiertos cuentan hasta su última reseña sin sumar un cierre. **Entrada tardía:** la observación empieza en `VENTANA_INICIO` (2016-01-01); quien tiene reseñas antes entra al riesgo con la edad que ya tenía, y quien terminó antes no se cuenta. Se incluye la curva ingenua (sin entrada tardía) para comparar.
+- Se reportan la mediana de vida (si la curva baja de 0,5) y el número en riesgo a 0, 1, 2, 3, 5 y 10 años. Solo se comparan grupos con **al menos 100 negocios**.
+
+### Modelo de riesgo de cierre (`spark-riesgo`)
+
+- Variables por negocio con datos hasta T: sentimiento medio, tendencia del % negativo (últimos 6 meses frente a lo anterior), estrellas medias, log(reseñas), edad, días sin reseñas y **competidores de la misma categoría a 500 m** (`$geoNear`, solo los activos en T).
+- **Etiqueta:** 1 si cerró y su última reseña cae entre T y T + 12 meses; 0 si siguió activo después o sigue abierto; se excluyen los negocios sin actividad después de T.
+- Partición por negocio (80/20), pesos por clase, regresión logística frente a random forest. Se elige por **AUC-PR** y se reportan AUC-ROC, AUC-PR (frente a la tasa de cierres, que es su línea base) y recall/precisión en el umbral.
+- Umbral: el mayor que alcanza un **recall de 0,70** en entrenamiento. Se prefiere avisar de más que dejar pasar cierres.
+
+### Endpoints nuevos
+
+| Endpoint | Parámetros | Consulta |
+|---|---|---|
+| `GET /live/hotspots` | `fecha`?, `lat`/`lon`/`radio`?, `solo_hotspots`?, `limit`? | Ventanas que contienen la fecha (por defecto la última) |
+| `GET /live/evolucion` | `geohash`? | % negativo por ventana (para la gráfica de evolución) |
+| `GET\|POST /alerts` | `lat`/`lon`/`radio` o polígono GeoJSON; `activas`?, `categoria`? | Alertas del streaming |
+| `GET /survival/<categoria>` | `zona`? o `poligono`?, `entrada_tardia`?, `min_negocios`?, `comparar=categoria\|zona`? | Kaplan-Meier (`todas` para el total) |
+| `GET /risk/near` | `lat`, `lon`, `radio`, `categoria`?, `limit`? | `$near` sobre `riesgo_negocios` |
+| `GET /zonas` | — | Polígonos de las zonas |
+
+`/health` incluye `kafka` (broker y consumidor: retraso, último lote y modelo cargado).
+
+### Dashboard (Power BI)
+
+Power BI Desktop, *Obtener datos → Web*, con las URL públicas:
+
+- **Mapa de hotspots:** `/live/hotspots?limit=500`
+- **Tabla de alertas activas:** `/alerts?limit=500`
+- **Curvas de supervivencia:** `/survival/todas?comparar=zona` y `/survival/todas?comparar=categoria`
+- **Evolución del % negativo:** `/live/evolucion`
+
+Durante la demo, con el productor publicando, se pulsa **Actualizar**.
+
+### Jenkins (Entrega 2)
+
+Se agregan las etapas de riesgo, supervivencia y streaming, y dos pruebas que bloquean el despliegue si fallan:
+
+- **Prueba del modelo versionado** (`api/tests/modelo`): el modelo guardado y el que cargó el streaming son los de `api/modelos_esperados.json` (versión y fecha de corte).
+- **Humo del streaming:** publica 100 mensajes marcados como prueba y espera a que aparezcan clasificados en `reviews_stream`. Estos mensajes no se usan para alertas ni ventanas.
+
 ## Forma de trabajo en GitHub
 
 Cada integrante trabaja en su rama y abre un pull request hacia `main`; al hacer merge, Jenkins despliega. Para mostrar que una prueba fallida bloquea el despliegue, se abrió un PR que rompe la prueba de la fórmula y quedó un build en rojo en el historial de Jenkins.
@@ -152,14 +234,15 @@ Cada integrante trabaja en su rama y abre un pull request hacia `main`; al hacer
 
 ```
 ├── docker-compose.yml   Jenkinsfile   .env.example
-├── ingest/              Dask: descarga, limpieza, vida de los negocios, carga a MongoDB
-├── spark/jobs/          mapreduce.py · sentimiento.py · balanceo.py · comun.py · textomodelo.py
-├── api/                 Flask: app.py · queries.py · sentiment.py · tests/unit · tests/smoke · static/
+├── ingest/              Dask: descarga, limpieza, vida, carga a MongoDB · producer.py (Kafka)
+├── spark/jobs/          mapreduce.py · sentimiento.py · balanceo.py · riesgo.py · supervivencia.py
+│                        streaming.py · reinicio.py · comun.py · riesgo_vars.py · km.py · zonas.py
+├── api/                 Flask: app.py · queries.py · km.py · tests/unit · tests/modelo · tests/smoke · static/
 └── jenkins/             imagen con Docker CLI + configuración como código
 ```
 
 ## Fuentes
 
 - Yelp Open Dataset, vía Kaggle (`yelp-dataset/yelp-dataset`). Se usa según los términos de uso de Yelp.
-- Se reutilizan piezas de trabajos anteriores del equipo: SentimentStream, KafkaMed, el sistema geoespacial y el ejercicio de discos.
+- Se reutilizan piezas de trabajos anteriores del equipo: SentimentStream (pipeline de texto), KafkaMed (productor, inferencia en streaming y alerta temprana), el sistema geoespacial y el ejercicio de discos (MapReduce, ventanas con watermark y Kaplan-Meier con entrada tardía).
 - Parte del código se desarrolló con apoyo de un asistente de IA (Claude, de Anthropic) y fue revisado, probado y adaptado por el equipo.

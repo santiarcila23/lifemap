@@ -15,5 +15,6 @@ exec /opt/spark/bin/spark-submit \
   --conf spark.sql.session.timeZone=UTC \
   --conf spark.sql.shuffle.partitions="${SPARK_SHUFFLE_PARTITIONS:-16}" \
   --conf spark.jars.ivy=/tmp/ivy \
-  --py-files /opt/jobs/comun.py,/opt/jobs/geohash.py,/opt/jobs/textomodelo.py \
+  --conf spark.cores.max="${SPARK_CORES_MAX:-64}" \
+  --py-files /opt/jobs/comun.py,/opt/jobs/geohash.py,/opt/jobs/textomodelo.py,/opt/jobs/riesgo_vars.py,/opt/jobs/km.py,/opt/jobs/zonas.py \
   "/opt/jobs/${JOB}.py" "$@"

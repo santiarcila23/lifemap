@@ -1,9 +1,10 @@
-// Pipeline CI/CD de LifeMap (Entrega 1).
+// Pipeline CI/CD de LifeMap (Entregas 1 y 2).
 // Se dispara solo: pollSCM cada 2 minutos sobre main (Jenkins no tiene URL pública para el
 // webhook de GitHub; el profesor acepta pollSCM documentado).
 //
-// Checkout -> Build -> pytest unitarias -> Servicios -> Ingesta* -> Spark* -> Staging
-//          -> pruebas de humo contra staging -> Despliegue -> Verificar /health (commit)
+// Checkout -> Build -> pytest unitarias -> Servicios (incluye Kafka) -> Ingesta* -> Spark* (MapReduce,
+//          sentimiento, riesgo, supervivencia) -> Streaming -> prueba del modelo versionado
+//          -> humo del streaming (100 mensajes) -> Staging -> humo de la API -> Despliegue -> /health
 // (*) solo si faltan datos o se pide con los parámetros.
 // Si cualquier etapa falla, NO se despliega: la API pública sigue con la versión anterior.
 
@@ -69,7 +70,8 @@ pipeline {
 
     stage('Levantar servicios') {
       steps {
-        sh '$COMPOSE up -d --wait mongo dask-scheduler dask-worker spark-master spark-worker'
+        sh '$COMPOSE up -d --wait mongo kafka dask-scheduler dask-worker spark-master spark-worker'
+        sh '$COMPOSE up --no-deps kafka-init'
         sh '$COMPOSE ps'
       }
     }
@@ -101,6 +103,69 @@ pipeline {
       when { anyOf { expression { params.RUN_BALANCEO }; expression { countDocs('balanceo_tiempos') == 0 } } }
       steps {
         sh 'docker compose --profile benchmark run --rm --no-deps -e FORCE_SPARK=true spark-balanceo'
+      }
+    }
+
+    stage('Spark: modelo de riesgo de cierre') {
+      steps {
+        sh '$COMPOSE run --rm --no-deps -e FORCE_SPARK=$FORCE_SPARK spark-riesgo'
+      }
+    }
+
+    stage('Supervivencia (Kaplan-Meier)') {
+      steps {
+        sh '$COMPOSE run --rm --no-deps -e FORCE_SPARK=$FORCE_SPARK spark-supervivencia'
+      }
+    }
+
+    stage('Streaming: Kafka -> Spark -> MongoDB') {
+      steps {
+        // se recrea si cambió la imagen o el modelo; espera a que reporte avance en MongoDB
+        sh '$COMPOSE up -d --no-deps --force-recreate spark-streaming'
+        sh '''
+          for i in $(seq 1 36); do
+            EDAD=$($COMPOSE exec -T mongo mongosh lifemap --quiet --eval \
+              'const d=db.stream_estado.findOne({_id:"reviews"}); print(d ? Math.round((new Date()-d.actualizado)/1000) : 9999)' | tail -1)
+            echo "Streaming: último reporte hace ${EDAD} s"
+            if [ "$EDAD" -lt 15 ] 2>/dev/null; then exit 0; fi
+            sleep 5
+          done
+          $COMPOSE logs --tail 60 spark-streaming
+          echo "El streaming no reportó avance en 3 minutos"; exit 1
+        '''
+      }
+    }
+
+    stage('Prueba del modelo versionado') {
+      steps {
+        sh '''
+          NAME="lifemap-modelo-${BUILD_NUMBER}"
+          set +e
+          $COMPOSE run --name "$NAME" --no-deps api-staging pytest tests/modelo -q --junitxml=/tmp/modelo.xml
+          STATUS=$?
+          set -e
+          docker cp "$NAME:/tmp/modelo.xml" reports/modelo.xml || true
+          docker rm -f "$NAME" >/dev/null 2>&1 || true
+          exit $STATUS
+        '''
+      }
+    }
+
+    stage('Prueba de humo del streaming') {
+      steps {
+        // publica 100 reseñas marcadas como prueba y verifica que aparecen clasificadas en MongoDB
+        sh '''
+          CORRIDA="jenkins-${BUILD_NUMBER}"
+          $COMPOSE run --rm --no-deps -e MAX_MENSAJES=100 -e PRUEBA=true -e CORRIDA="$CORRIDA" producer
+          for i in $(seq 1 24); do
+            N=$($COMPOSE exec -T mongo mongosh lifemap --quiet --eval \
+              "print(db.reviews_stream.countDocuments({corrida: '$CORRIDA', sentimiento: {\$exists: true}}))" | tail -1)
+            echo "Clasificadas en MongoDB: ${N}/100"
+            if [ "$N" = "100" ]; then exit 0; fi
+            sleep 5
+          done
+          echo "El streaming no clasificó los 100 mensajes en 2 minutos"; exit 1
+        '''
       }
     }
 

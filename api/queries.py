@@ -182,3 +182,90 @@ def negocio_salida(d: dict) -> dict:
             "abierto": bool(d.get("is_open")), "lat": lat, "lon": lon, "geohash": d.get("geohash"),
             "vida": {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in vida.items()},
             "sentimiento": d.get("sentimiento")}
+
+
+# ================================================================== Entrega 2
+RADIO_TIERRA_M = 6_378_100
+
+
+def fecha(args, name: str):
+    """Fecha ISO (AAAA-MM-DD) opcional."""
+    from datetime import datetime
+    raw = (args.get(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw[:10])
+    except ValueError:
+        raise ValidationError(f"'{name}' debe ser una fecha AAAA-MM-DD (recibido: {raw!r})") from None
+
+
+def si_no(args, name: str, default: bool) -> bool:
+    raw = (args.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in ("1", "true", "si", "sí", "yes"):
+        return True
+    if raw in ("0", "false", "no"):
+        return False
+    raise ValidationError(f"'{name}' debe ser 'si' o 'no'")
+
+
+def punto_opcional(args):
+    """lat y lon juntos o ninguno (sin punto = toda el área)."""
+    if args.get("lat") in (None, "") and args.get("lon") in (None, ""):
+        return None
+    return punto(args)
+
+
+def circulo(lat, lon, radio_m, campo: str) -> dict:
+    """$geoWithin con $centerSphere: permite ordenar por otro campo (probabilidad, % negativo)."""
+    return {campo: {"$geoWithin": {"$centerSphere": [[lon, lat], radio_m / RADIO_TIERRA_M]}}}
+
+
+def comparar(args) -> str | None:
+    v = (args.get("comparar") or "").strip().lower()
+    if v and v not in ("categoria", "zona"):
+        raise ValidationError("'comparar' debe ser 'categoria' o 'zona'")
+    return v or None
+
+
+def zona(args, zonas: dict) -> str | None:
+    z = (args.get("zona") or "").strip()
+    if z and z not in zonas:
+        raise ValidationError(f"Zona desconocida '{z}'. Zonas: {', '.join(zonas)}")
+    return z or None
+
+
+def _limpio(v):
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    if isinstance(v, dict):
+        return {k: _limpio(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_limpio(x) for x in v]
+    return v
+
+
+def ventana_salida(d: dict) -> dict:
+    lon, lat = d["centro"]["coordinates"]
+    return _limpio({"geohash": d["geohash"], "inicio": d["inicio"], "fin": d["fin"], "lat": lat, "lon": lon,
+                    "resenas": d["resenas"], "negativas": d["negativas"], "pct_negativas": d["pct_negativas"],
+                    "pct_anterior": d.get("pct_anterior"), "cambio": d.get("cambio"),
+                    "hotspot": bool(d.get("hotspot")), "geometry": d.get("geometry")})
+
+
+def alerta_salida(d: dict) -> dict:
+    lon, lat = d["geometry"]["coordinates"]
+    return _limpio({"business_id": d["_id"], "nombre": d.get("nombre"), "categoria_principal": d.get("categoria_principal"),
+                    "lat": lat, "lon": lon, "probabilidad": d.get("probabilidad"), "umbral": d.get("umbral"),
+                    "activa": d.get("activa"), "fecha": d.get("fecha"), "procesado_en": d.get("procesado_en"),
+                    "primera_alerta": d.get("primera_alerta"), "variables": d.get("variables")})
+
+
+def riesgo_salida(d: dict) -> dict:
+    lon, lat = d["location"]["coordinates"]
+    return _limpio({"business_id": d["_id"], "nombre": d.get("nombre"), "categoria_principal": d.get("categoria_principal"),
+                    "lat": lat, "lon": lon, "probabilidad": d.get("probabilidad"),
+                    "probabilidad_en_corte": d.get("probabilidad_corte"), "alerta": bool(d.get("alerta")),
+                    "fecha_ref": d.get("fecha_ref"), "variables": d.get("variables")})

@@ -6,6 +6,8 @@ Sentimiento de las reseñas con Spark MLlib (pipeline de SentimentStream sobre t
             -> HashingTF -> IDF -> clasificador.
   Clasificadores: Naive Bayes multinomial y regresión logística multinomial, ambos con
   pesos por clase (inverso de la frecuencia) para compensar el desbalance.
+  Fecha de corte (Entrega 2): solo se entrena con reseñas hasta FECHA_CORTE; las posteriores
+  se reservan para el productor de Kafka y nunca las ve el modelo.
   Partición SIN FUGA: por negocio (hash del business_id), 80 % entrenamiento y 20 % prueba;
   ningún negocio queda en los dos lados.
 
@@ -19,6 +21,7 @@ Salidas
 import json
 import os
 import random
+from datetime import datetime, timezone
 
 import numpy as np
 from pyspark.ml import Pipeline
@@ -28,7 +31,7 @@ from pyspark.sql import functions as F
 
 import sys
 
-from comun import ya_hecho, MODELS, REVIEWS, Cronometro, escribir_mongo, guardar_json, log, sesion
+from comun import FECHA_CORTE, reporte_actual, MODELS, REVIEWS, Cronometro, escribir_mongo, guardar_json, log, sesion
 import textomodelo
 
 NUM_FEATURES = int(os.environ.get("NUM_FEATURES", str(1 << 16)))
@@ -36,13 +39,18 @@ MAX_TRAIN = int(os.environ.get("MAX_TRAIN", "0"))          # 0 = todas las rese�
 CLASES = ["negativo", "neutral", "positivo"]
 T = "SENT"
 
-if ya_hecho("sentimiento.json"):
+if reporte_actual("sentimiento.json", fecha_corte=FECHA_CORTE):
     sys.exit(0)
 spark = sesion("lifemap_sentimiento")
 spark.sparkContext.setLogLevel("WARN")
 
-df = (spark.read.parquet(REVIEWS)
+todas = spark.read.parquet(REVIEWS)
+n_todas = todas.count()
+df = (todas.filter(F.col("date") < F.to_timestamp(F.lit(FECHA_CORTE)))
       .select("review_id", "business_id", "text", F.col("sentimiento").cast("double").alias("label")))
+n_hasta_t = df.count()
+log(T, f"Fecha de corte T = {FECHA_CORTE}: {n_hasta_t:,} reseñas antes de T para el modelo; "
+       f"{n_todas - n_hasta_t:,} posteriores reservadas para Kafka")
 df = df.withColumn("fold", F.abs(F.hash("business_id")) % 10)
 train, test = df.filter("fold < 8"), df.filter("fold >= 8")
 if MAX_TRAIN:
@@ -131,7 +139,8 @@ else:
 stop = StopWordsRemover.loadDefaultStopWords("english")
 np.savez_compressed(os.path.join(MODELS, "sentiment_export.npz"), idf=idf, W=W, b=b)
 meta = {"modelo": mejor, "num_features": NUM_FEATURES, "clases": CLASES, "stopwords": stop,
-        "f1_macro": resultados[mejor]["f1_macro"], "version": "sentiment_v1"}
+        "f1_macro": resultados[mejor]["f1_macro"], "version": "sentiment_v1",
+        "fecha_corte": FECHA_CORTE, "entrenado": datetime.now(timezone.utc).isoformat(timespec="seconds")}
 with open(os.path.join(MODELS, "sentiment_export.json"), "w", encoding="utf-8") as f:
     json.dump(meta, f, ensure_ascii=False)
 
@@ -141,7 +150,13 @@ m_py = {"num_features": NUM_FEATURES, "stopwords": set(stop), "idf": idf, "W": W
 iguales = sum(1 for r in muestra if textomodelo.predecir(r["text"], m_py)[0] == int(r["prediction"]))
 log(T, f"Réplica de /predict coincide con Spark en {iguales} de {len(muestra)} reseñas de prueba")
 
+with open(os.path.join(MODELS, "sentiment_v1", "lifemap_version.json"), "w", encoding="utf-8") as f:
+    json.dump(meta | {"stopwords": None}, f, ensure_ascii=False)
+
 guardar_json("sentimiento.json", {
+    "fecha_corte": FECHA_CORTE,
+    "resenas_antes_de_corte": n_hasta_t,
+    "resenas_reservadas_para_kafka": n_todas - n_hasta_t,
     "particion": "por negocio: fold = abs(hash(business_id)) % 10; entrenamiento fold < 8, prueba fold >= 8",
     "negocios_en_ambos_lados": cruce,
     "distribucion_entrenamiento": {CLASES[k]: v for k, v in sorted(dist_train.items())},

@@ -17,6 +17,33 @@ MONGO_DB = os.environ.get("MONGO_DB", "lifemap")
 # Con esa exposición, un cierre más o menos mueve la tasa a lo sumo 1 punto porcentual.
 MIN_DIAS = int(os.environ.get("MIN_DIAS_NEGOCIO", "36500"))
 
+# ---------------------------------------------------------------- Entrega 2
+# Fecha de corte T: el modelo de sentimiento y el de riesgo se entrenan solo con reseñas hasta T;
+# las posteriores las publica el productor en Kafka. Yelp termina el 2022-01-19, así que
+# T = 2021-01-01 deja los 12 meses de T a T + 12 meses dentro de los datos (etiqueta de riesgo).
+FECHA_CORTE = os.environ.get("FECHA_CORTE", "2021-01-01")
+KAFKA = os.environ.get("KAFKA", "kafka:9092")
+TOPIC = os.environ.get("TOPIC", "reviews")
+CHECKPOINTS = os.environ.get("CHECKPOINT_DIR", "/data/checkpoints")
+
+
+def reporte_actual(reporte: str, **esperado) -> bool:
+    """True si el reporte existe, coincide con los valores esperados y no se pidió FORCE_SPARK.
+
+    Sirve para que un trabajo se repita solo cuando cambia algo que lo afecta (por ejemplo la
+    fecha de corte), sin tener que borrar nada a mano.
+    """
+    forzar = os.environ.get("FORCE_SPARK", "false").lower() in ("1", "true", "yes")
+    ruta = os.path.join(REPORTS, reporte)
+    if forzar or not os.path.exists(ruta):
+        return False
+    with open(ruta, encoding="utf-8") as f:
+        datos = json.load(f)
+    if all(str(datos.get(k)) == str(v) for k, v in esperado.items()):
+        print(f"[skip] {reporte} ya existe con {esperado}; FORCE_SPARK=true para recalcular", flush=True)
+        return True
+    return False
+
 
 def ya_hecho(reporte: str) -> bool:
     """True si el reporte ya existe y no se pidió recalcular (FORCE_SPARK=true)."""

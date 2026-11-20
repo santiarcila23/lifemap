@@ -7,3 +7,4 @@ pymongo==4.10.1
 kaggle==1.7.4.5
 bokeh==3.7.3
 psutil==7.0.0
+confluent-kafka==2.6.1

@@ -1,6 +1,7 @@
-# LifeMap: reputación, ubicación y supervivencia de negocios (Entrega 1)
+# LifeMap: reputación, ubicación y supervivencia de negocios (Entregas 1 y 2)
 #
 #   docker compose up -d --build                    levanta todo y corre ingesta + Spark la primera vez
+#   docker compose --profile demo run --rm producer publica en Kafka las reseñas posteriores a T
 #   docker compose --profile tunnel up -d tunnel    publica la API en la URL de ngrok
 #   docker compose --profile benchmark run --rm spark-balanceo   tabla de tiempos del balanceo
 #
@@ -21,6 +22,9 @@ x-spark: &spark
     MONGO_DB: ${MONGO_DB:-lifemap}
     MIN_DIAS_NEGOCIO: ${MIN_DIAS_NEGOCIO:-36500}
     FORCE_SPARK: ${FORCE_SPARK:-false}
+    FECHA_CORTE: ${FECHA_CORTE:-2021-01-01}
+    KAFKA: kafka:9092
+    TOPIC: reviews
 
 x-spark-job: &spark-job
   <<: *spark
@@ -45,6 +49,8 @@ x-api-env: &api-env
   DASK_DASHBOARD: http://dask-scheduler:8787
   MODELS_DIR: /models
   REPORT_DIR: /data/reports
+  KAFKA_HOST: kafka:9092
+  FECHA_CORTE: ${FECHA_CORTE:-2021-01-01}
 
 x-api-health: &api-health
   test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/ping', timeout=3)"]
@@ -118,6 +124,104 @@ services:
       <<: *spark-env
       PARTICIONES: ${PARTICIONES:-2,8,32,200}
       REPETICIONES: ${REPETICIONES:-3}
+
+  # Entrega 2: modelo de riesgo de cierre y curvas de Kaplan-Meier (se ejecutan y terminan)
+  spark-riesgo:
+    <<: *spark-job
+    command: ["bash", "/opt/jobs/submit.sh", "riesgo"]
+
+  spark-supervivencia:
+    <<: *spark-job
+    command: ["python3", "-u", "/opt/jobs/supervivencia.py"]
+    environment:
+      <<: *spark-env
+      VENTANA_INICIO: ${VENTANA_INICIO:-2016-01-01}
+      MIN_NEGOCIOS_KM: ${MIN_NEGOCIOS_KM:-100}
+
+  # Entrega 2: streaming Kafka -> sentimiento -> ventanas, riesgo y alertas -> MongoDB (siempre arriba)
+  spark-streaming:
+    <<: *spark
+    restart: unless-stopped
+    command: ["bash", "/opt/jobs/submit.sh", "streaming"]
+    environment:
+      <<: *spark-env
+      SPARK_CORES_MAX: 1                 # deja el otro núcleo del worker para los trabajos por lotes
+      SPARK_EXECUTOR_MEMORY: 512m
+      SPARK_DRIVER_MEMORY: 1g
+      SPARK_SHUFFLE_PARTITIONS: 4         # particiones del estado de las ventanas
+      UMBRAL_HOTSPOT: ${UMBRAL_HOTSPOT:-15}
+      MIN_RESENAS_VENTANA: ${MIN_RESENAS_VENTANA:-30}
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      spark-worker:
+        condition: service_healthy
+      spark-sentimiento:
+        condition: service_completed_successfully
+      spark-riesgo:
+        condition: service_completed_successfully
+
+  # Reinicia el streaming a la fecha de corte para repetir la demo (ver README)
+  spark-reinicio:
+    <<: *spark
+    profiles: ["herramientas"]
+    restart: "no"
+    command: ["python3", "-u", "/opt/jobs/reinicio.py"]
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------- Kafka (modo KRaft, sin ZooKeeper)
+  kafka:
+    image: apache/kafka:3.8.0
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  # Crea el topic reviews con 3 particiones (se ejecuta y termina)
+  kafka-init:
+    image: apache/kafka:3.8.0
+    restart: "no"
+    command: ["/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "kafka:9092", "--create", "--if-not-exists",
+              "--topic", "reviews", "--partitions", "3", "--replication-factor", "1"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # Productor con reloj acelerado (se lanza a mano en la demo; Jenkins lo usa con 100 mensajes)
+  producer:
+    <<: *dask
+    profiles: ["demo", "ci"]
+    restart: "no"
+    command: ["python", "-u", "producer.py"]
+    environment:
+      KAFKA: kafka:9092
+      TOPIC: reviews
+      FECHA_CORTE: ${FECHA_CORTE:-2021-01-01}
+      SEGUNDOS_POR_MES: ${SEGUNDOS_POR_MES:-10}
+      MAX_MENSAJES: ${MAX_MENSAJES:-0}
+      PRUEBA: ${PRUEBA:-false}
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
 
   # ---------------------------------------------------------------- Dask
   dask-scheduler:

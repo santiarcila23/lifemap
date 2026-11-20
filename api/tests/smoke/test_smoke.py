@@ -62,3 +62,33 @@ def test_predict():
 
 def test_validacion_400():
     assert get("/businesses/near", lat=200, lon=0).status_code == 400
+
+
+# ------------------------------------------------------------------ Entrega 2
+def test_health_incluye_kafka_y_consumidor():
+    k = get("/health").json()["servicios"]["kafka"]
+    assert k["estado"] == "up", k
+    assert "consumidor" in k
+
+
+def test_hotspots_y_evolucion(centro):
+    j = get("/live/hotspots", lat=centro[0], lon=centro[1], radio=30000).json()
+    assert "ventanas" in j
+    assert "evolucion" in get("/live/evolucion").json()
+
+
+def test_alertas_por_radio(centro):
+    j = get("/alerts", lat=centro[0], lon=centro[1], radio=30000).json()
+    assert "alertas" in j and all("probabilidad" in a for a in j["alertas"])
+
+
+def test_supervivencia_por_categoria_y_zona():
+    j = get("/survival/todas").json()
+    assert j["negocios"] > 0 and j["curva"][0]["supervivencia"] == 1.0
+    z = get("/survival/todas", comparar="zona").json()
+    assert z["grupos"]
+
+
+def test_riesgo_cerca(centro):
+    j = get("/risk/near", lat=centro[0], lon=centro[1], radio=3000).json()
+    assert j["total"] > 0 and 0 <= j["negocios"][0]["probabilidad"] <= 1

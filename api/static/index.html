@@ -7,91 +7,314 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
-  :root { --bg:#fff; --fg:#111; --muted:#555; --line:#ddd; --card:#f6f6f6; --abierto:#1f77b4; --cerrado:#d62728; }
-  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#111; --fg:#eee; --muted:#aaa; --line:#333; --card:#1c1c1c; } }
-  :root[data-theme="dark"] { --bg:#111; --fg:#eee; --muted:#aaa; --line:#333; --card:#1c1c1c; }
-  body { margin:0; font-family: Arial, sans-serif; background:var(--bg); color:var(--fg); }
-  header { padding:12px 16px; border-bottom:1px solid var(--line); }
-  h1 { margin:0; font-size:20px; } header p { margin:4px 0 0; color:var(--muted); font-size:14px; }
-  main { display:grid; grid-template-columns: 1fr 360px; gap:0; min-height: calc(100vh - 62px); }
-  #mapa { min-height: 420px; }
-  aside { padding:12px 16px; border-left:1px solid var(--line); overflow:auto; font-size:14px; }
-  aside h2 { font-size:15px; margin:14px 0 6px; }
-  .card { background:var(--card); padding:8px 10px; border-radius:6px; margin-bottom:8px; }
-  code, a { font-size:13px; } a { color:var(--abierto); }
-  textarea { width:100%; box-sizing:border-box; height:60px; }
-  @media (max-width: 800px) { main { grid-template-columns: 1fr; } aside { border-left:0; border-top:1px solid var(--line); } #mapa { height: 55vh; } }
+  :root { --bg:#f5f6f8; --panel:#fff; --fg:#1d2330; --muted:#5f6b7a; --line:#e2e5ea; --soft:#f0f2f5;
+          --accent:#2557d6; --ok:#1b8a4b; --bad:#c62828; --warn:#e07b00; --abierto:#2b6cb0; --cerrado:#c62828; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#12151b; --panel:#1b1f27; --fg:#e8ebf0; --muted:#9aa4b2; --line:#2c323d; --soft:#232833; --accent:#6b93ff; } }
+  :root[data-theme="dark"] { --bg:#12151b; --panel:#1b1f27; --fg:#e8ebf0; --muted:#9aa4b2; --line:#2c323d; --soft:#232833; --accent:#6b93ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: Arial, Helvetica, sans-serif; background:var(--bg); color:var(--fg); font-size:14px; }
+  header { display:flex; flex-wrap:wrap; align-items:center; gap:10px 18px; padding:12px 18px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:19px; }
+  header .sub { color:var(--muted); font-size:13px; }
+  .estado { margin-left:auto; display:flex; gap:8px; flex-wrap:wrap; }
+  .pill { padding:4px 10px; border-radius:999px; font-size:12px; background:var(--soft); color:var(--muted); white-space:nowrap; }
+  .pill b { color:var(--fg); }
+  .pill.ok::before, .pill.bad::before { content:"●"; margin-right:5px; }
+  .pill.ok::before { color:var(--ok); } .pill.bad::before { color:var(--bad); }
+  .kpis { display:grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap:10px; padding:12px 18px; }
+  .kpi { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  .kpi .v { font-size:22px; font-weight:bold; } .kpi .l { color:var(--muted); font-size:12px; margin-top:2px; }
+  main { display:grid; grid-template-columns: 1fr 400px; gap:12px; padding:0 18px 18px; }
+  #mapa { height: calc(100vh - 200px); min-height:440px; border-radius:10px; border:1px solid var(--line); }
+  aside { background:var(--panel); border:1px solid var(--line); border-radius:10px; display:flex; flex-direction:column; max-height: calc(100vh - 200px); min-height:440px; }
+  .tabs { display:flex; border-bottom:1px solid var(--line); overflow-x:auto; }
+  .tabs button { flex:1; padding:11px 6px; border:0; background:none; color:var(--muted); font:inherit; font-size:13px; cursor:pointer; border-bottom:3px solid transparent; white-space:nowrap; }
+  .tabs button.on { color:var(--fg); font-weight:bold; border-bottom-color:var(--accent); }
+  .panel { display:none; padding:14px 16px; overflow:auto; } .panel.on { display:block; }
+  .panel h3 { margin:14px 0 6px; font-size:14px; } .panel h3:first-child { margin-top:0; }
+  .ayuda { color:var(--muted); font-size:13px; line-height:1.45; margin:0 0 10px; }
+  .card { background:var(--soft); border-radius:8px; padding:10px 12px; margin-bottom:8px; line-height:1.5; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .mini .v { font-size:18px; font-weight:bold; } .mini .l { font-size:12px; color:var(--muted); }
+  .fila { display:flex; justify-content:space-between; gap:8px; padding:7px 0; border-bottom:1px solid var(--line); cursor:pointer; }
+  .fila:last-child { border-bottom:0; } .fila:hover { color:var(--accent); }
+  .fila small { color:var(--muted); display:block; }
+  .barra { height:6px; background:var(--line); border-radius:3px; margin-top:4px; } .barra i { display:block; height:100%; background:var(--warn); border-radius:3px; }
+  label.sw { display:flex; align-items:center; gap:8px; padding:6px 0; cursor:pointer; }
+  select, textarea, button.btn { font:inherit; }
+  select { width:100%; padding:7px; border-radius:6px; border:1px solid var(--line); background:var(--panel); color:var(--fg); }
+  textarea { width:100%; height:70px; padding:8px; border-radius:6px; border:1px solid var(--line); background:var(--panel); color:var(--fg); }
+  button.btn { padding:8px 14px; border-radius:6px; border:0; background:var(--accent); color:#fff; cursor:pointer; margin-top:6px; }
+  .ej { display:inline-block; margin:4px 4px 0 0; padding:3px 8px; border-radius:999px; background:var(--soft); color:var(--muted); font-size:12px; cursor:pointer; }
+  .res { font-size:18px; font-weight:bold; margin-top:10px; }
+  .positivo { color:var(--ok); } .negativo { color:var(--bad); } .neutral { color:var(--warn); }
+  svg text { fill: var(--muted); font-size:10px; }
+  details { margin-top:14px; } summary { cursor:pointer; color:var(--muted); }
+  details a { display:block; color:var(--accent); font-size:12px; padding:2px 0; word-break:break-all; }
+  .leyenda { background:var(--panel); color:var(--fg); padding:8px 10px; border-radius:8px; line-height:1.7; font-size:12px; box-shadow:0 1px 4px rgba(0,0,0,.25); }
+  .leyenda i { display:inline-block; width:11px; height:11px; border-radius:50%; margin-right:6px; vertical-align:-1px; }
+  .leyenda i.sq { border-radius:2px; }
+  .vacio { color:var(--muted); font-style:italic; }
+  @media (max-width: 960px) { main { grid-template-columns:1fr; } .kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    #mapa { height:55vh; } aside { max-height:none; } }
 </style>
 </head>
 <body>
 <header>
-  <h1>LifeMap · reputación, ubicación y supervivencia de negocios</h1>
-  <p id="sub">Haga clic en el mapa: negocios a 1 km (azul abierto, rojo cerrado) y resumen de la zona a 2 km.</p>
+  <div>
+    <h1>LifeMap</h1>
+    <div class="sub" id="sub">Reputación, ubicación y supervivencia de restaurantes</div>
+  </div>
+  <div class="estado" id="estado"><span class="pill">Revisando servicios…</span></div>
 </header>
+
+<section class="kpis">
+  <div class="kpi"><div class="v" id="kNeg">—</div><div class="l">Restaurantes en el área</div></div>
+  <div class="kpi"><div class="v" id="kRes">—</div><div class="l">Reseñas analizadas</div></div>
+  <div class="kpi"><div class="v" id="kVivo">—</div><div class="l">Reseñas clasificadas en vivo</div></div>
+  <div class="kpi"><div class="v" id="kHot">—</div><div class="l">Zonas con alza de quejas (hotspots)</div></div>
+  <div class="kpi"><div class="v" id="kAle">—</div><div class="l">Alertas de riesgo de cierre</div></div>
+</section>
+
 <main>
   <div id="mapa"></div>
   <aside>
-    <h2>Zona seleccionada</h2>
-    <div id="zona" class="card">Haga clic en el mapa.</div>
-    <h2>Sentimiento de un texto (/predict)</h2>
-    <textarea id="txt">The food was delicious and the staff very friendly.</textarea>
-    <button id="btn">Clasificar</button>
-    <div id="pred" class="card" style="margin-top:6px">—</div>
-    <h2>Endpoints</h2>
-    <div class="card" id="links"></div>
+    <nav class="tabs">
+      <button data-t="zona" class="on">Explorar zona</button>
+      <button data-t="vivo">En vivo</button>
+      <button data-t="vida">Supervivencia</button>
+      <button data-t="texto">Probar el modelo</button>
+    </nav>
+
+    <section class="panel on" id="p-zona">
+      <p class="ayuda">Haga clic en cualquier punto del mapa. Verá los restaurantes a 1 km (azul abierto, rojo cerrado) y el resumen de la zona a 2 km.</p>
+      <div id="zona"><div class="card vacio">Todavía no ha seleccionado una zona.</div></div>
+      <h3>Mayor riesgo de cierre cerca (1 km)</h3>
+      <div id="riesgoCerca" class="card vacio">Seleccione una zona en el mapa.</div>
+    </section>
+
+    <section class="panel" id="p-vivo">
+      <p class="ayuda">Mientras el productor publica reseñas en Kafka, Spark las clasifica y esta pestaña se actualiza sola cada 10 segundos.</p>
+      <label class="sw"><input type="checkbox" id="chkHot" checked> Mostrar zonas (cuadros) de la última ventana de 30 días</label>
+      <label class="sw"><input type="checkbox" id="chkAlertas" checked> Mostrar restaurantes en alerta de cierre</label>
+      <h3>% de reseñas negativas por ventana de 30 días</h3>
+      <div class="card" id="graEvol"><span class="vacio">Sin datos todavía: inicie el productor.</span></div>
+      <h3>Restaurantes con mayor riesgo de cierre</h3>
+      <div class="card" id="listaAlertas"><span class="vacio">Sin alertas todavía.</span></div>
+    </section>
+
+    <section class="panel" id="p-vida">
+      <p class="ayuda">Curvas de Kaplan-Meier: qué porcentaje de restaurantes sigue abierto después de cierto número de años. Tienen en cuenta a los que siguen abiertos (censura) y a los que ya existían antes de 2016 (entrada tardía).</p>
+      <select id="selVida">
+        <option value="zona">Comparar por zona</option>
+        <option value="categoria">Comparar por tipo de comida</option>
+      </select>
+      <div class="card" id="graVida" style="margin-top:8px"><span class="vacio">Cargando…</span></div>
+      <div id="tablaVida"></div>
+    </section>
+
+    <section class="panel" id="p-texto">
+      <p class="ayuda">Escriba una reseña en inglés y el modelo entrenado en Spark dirá si es positiva, neutral o negativa.</p>
+      <textarea id="txt">The food was delicious and the staff very friendly.</textarea>
+      <div>
+        <span class="ej">The food was cold and the waiter was rude.</span>
+        <span class="ej">It was okay, nothing special.</span>
+        <span class="ej">Amazing tacos, we will come back!</span>
+      </div>
+      <button class="btn" id="btn">Clasificar</button>
+      <div id="pred"></div>
+      <details>
+        <summary>Endpoints de la API (para revisión técnica)</summary>
+        <div id="links"></div>
+      </details>
+    </section>
   </aside>
 </main>
-<script>
-const capa = L.layerGroup();
-const mapa = L.map('mapa').setView([27.9506, -82.4572], 12);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19, attribution: '© OpenStreetMap'}).addTo(mapa);
-capa.addTo(mapa);
-const fmt = (x, d=2) => x == null ? '—' : Number(x).toLocaleString('es-CO', {maximumFractionDigits: d});
 
+<script>
+const fmt = (x, d = 1) => x == null ? '—' : Number(x).toLocaleString('es-CO', {maximumFractionDigits: d});
+const pct = (x, d = 1) => x == null ? '—' : fmt(x, d) + ' %';
+const $ = id => document.getElementById(id);
+const getJ = async u => { const r = await fetch(u); return r.json(); };
+const COLORES = ['#2557d6', '#c62828', '#1b8a4b', '#e07b00', '#7b3fbf', '#00838f', '#6d4c41', '#d81b60', '#546e7a', '#9e9d24', '#3949ab', '#ef6c00'];
+
+// ------------------------------------------------------------ mapa
+const mapa = L.map('mapa').setView([27.9506, -82.4572], 11);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19, attribution: '© OpenStreetMap'}).addTo(mapa);
+mapa.createPane('celdas'); mapa.getPane('celdas').style.zIndex = 350;       // los cuadros siempre debajo
+const rendCeldas = L.svg({pane: 'celdas'});
+const capaZona = L.layerGroup().addTo(mapa), capaHot = L.layerGroup().addTo(mapa), capaAlertas = L.layerGroup().addTo(mapa), capaFoco = L.layerGroup().addTo(mapa);
+const leyenda = L.control({position: 'bottomleft'});
+leyenda.onAdd = () => { const d = L.DomUtil.create('div', 'leyenda');
+  d.innerHTML = '<i style="background:#2b6cb0"></i>Restaurante abierto<br><i style="background:#c62828"></i>Restaurante cerrado<br>' +
+    '<i style="background:#e07b00"></i>Alerta de riesgo de cierre<br><i class="sq" style="background:#c62828;opacity:.5"></i>Zona hotspot (sube el % negativo)<br>' +
+    '<i class="sq" style="background:#888;opacity:.4"></i>Zona con reseñas en la ventana'; return d; };
+leyenda.addTo(mapa);
+
+// ------------------------------------------------------------ pestañas
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('on', p.id === 'p-' + b.dataset.t));
+  if (b.dataset.t === 'vida') cargarVida();
+});
+
+// ------------------------------------------------------------ encabezado e indicadores
 async function cargarMeta() {
   try {
-    const m = await (await fetch('/meta')).json();
+    const m = await getJ('/meta');
     if (m.area) {
       mapa.setView([m.area.lat, m.area.lon], 11);
-      document.getElementById('sub').textContent =
-        `${m.area.nombre} · ${m.area.familia} · ${fmt(m.negocios,0)} negocios, ${fmt(m.resenas,0)} reseñas. Haga clic en el mapa.`;
+      $('sub').textContent = `${m.area.nombre} · ${m.area.familia} · radio ${m.area.radio_km ?? 45} km`;
     }
+    $('kNeg').textContent = fmt(m.negocios, 0); $('kRes').textContent = fmt(m.resenas, 0);
     const c = m.area ? `lat=${m.area.lat}&lon=${m.area.lon}` : 'lat=27.9506&lon=-82.4572';
-    const ls = ['/health', `/businesses/near?${c}&radio=1000`, `/zones/summary?${c}&radio=2000`,
-      '/stats/closure?por=categoria', '/stats/closure?por=celda', '/predict?texto=great food', '/reports'];
-    document.getElementById('links').innerHTML = ls.map(u => `<div><a href="${u}" target="_blank">${u}</a></div>`).join('') +
-      '<div><code>POST /businesses/within</code> (GeoJSON Polygon)</div>';
+    const ls = ['/health', `/businesses/near?${c}&radio=1000`, `/zones/summary?${c}&radio=2000`, '/stats/closure?por=categoria',
+      '/stats/closure?por=celda', '/predict?texto=great food', '/live/hotspots', '/live/evolucion', '/alerts',
+      '/survival/todas', '/survival/todas?comparar=zona', `/risk/near?${c}&radio=2000`, '/zonas', '/reports'];
+    $('links').innerHTML = ls.map(u => `<a href="${u}" target="_blank">${u}</a>`).join('') + '<a>POST /businesses/within (polígono GeoJSON)</a>';
   } catch (e) { console.error(e); }
 }
 
-mapa.on('click', async (ev) => {
-  const {lat, lng} = ev.latlng;
-  capa.clearLayers();
-  L.circle([lat, lng], {radius: 1000, color: '#888', weight: 1, fill: false}).addTo(capa);
-  const near = await (await fetch(`/businesses/near?lat=${lat}&lon=${lng}&radio=1000&limit=200`)).json();
-  (near.negocios || []).forEach(n => {
-    L.circleMarker([n.lat, n.lon], {radius: 5, color: n.abierto ? '#1f77b4' : '#d62728', fillOpacity: .8})
-      .bindPopup(`<b>${n.nombre}</b><br>${n.categoria_principal} · ${n.estrellas}★<br>` +
-                 `${n.abierto ? 'Abierto (censurado)' : 'Cerrado (evento)'}<br>` +
-                 `Vida: ${fmt(n.vida.dias_negocio,0)} días · ${n.vida.n_resenas} reseñas<br>` +
-                 `Reseñas negativas: ${fmt(n.sentimiento && n.sentimiento.pct_negativas)} %`).addTo(capa);
-  });
-  const z = (await (await fetch(`/zones/summary?lat=${lat}&lon=${lng}&radio=2000`)).json()).resumen;
-  document.getElementById('zona').innerHTML = !z || !z.negocios ? 'Sin negocios en 2 km.' :
-    `<b>${z.negocios}</b> negocios (${z.cierres} cerrados) en 2 km<br>` +
-    `Tasa de cierre anual: <b>${fmt(z.tasa_cierre_anual)} %</b> ${z.confiable ? '' : '(pocos días-negocio)'}<br>` +
-    `Reseñas negativas: <b>${fmt(z.pct_resenas_negativas)} %</b> de ${fmt(z.resenas,0)}<br>` +
-    `Sentimiento medio (−1 a 1): ${fmt(z.sentimiento_medio, 3)} · estrellas ${fmt(z.estrellas_medias)}`;
-});
+async function cargarEstado() {
+  try {
+    const h = await getJ('/health'), s = h.servicios || {};
+    const p = (n, ok, extra = '') => `<span class="pill ${ok ? 'ok' : 'bad'}">${n}${extra}</span>`;
+    const k = s.kafka || {}, c = k.consumidor || {};
+    const retraso = c.retraso_mensajes == null ? '' : ` · retraso <b>${fmt(c.retraso_mensajes, 0)}</b>`;
+    $('estado').innerHTML = p('MongoDB', s.mongodb?.estado === 'up') + p('Spark', s.spark?.estado === 'up') +
+      p('Dask', s.dask?.estado === 'up') + p('Kafka', k.estado === 'up') + p('Streaming', c.estado === 'up', retraso) +
+      `<span class="pill">versión <b>${(h.commit || 'local').slice(0, 7)}</b></span>`;
+  } catch (e) { $('estado').innerHTML = '<span class="pill bad">API sin respuesta</span>'; }
+}
 
-document.getElementById('btn').onclick = async () => {
+// ------------------------------------------------------------ explorar zona
+mapa.on('click', ev => explorar(ev.latlng));
+
+async function explorar({lat, lng}) {
+  capaFoco.clearLayers();
+  document.querySelector('.tabs button[data-t="zona"]').click();
+  capaZona.clearLayers();
+  L.circle([lat, lng], {radius: 1000, color: '#555', weight: 1, fill: false, dashArray: '4'}).addTo(capaZona);
+  $('zona').innerHTML = '<div class="card vacio">Consultando…</div>';
+  let near, zs, rk;
+  try { [near, zs, rk] = await Promise.all([
+    getJ(`/businesses/near?lat=${lat}&lon=${lng}&radio=1000&limit=200`),
+    getJ(`/zones/summary?lat=${lat}&lon=${lng}&radio=2000`),
+    getJ(`/risk/near?lat=${lat}&lon=${lng}&radio=1000&limit=200`)]); }
+  catch (e) { $('zona').innerHTML = '<div class="card">No se pudo consultar la zona. Intente de nuevo.</div>'; return; }
+  (near.negocios || []).forEach(n => L.circleMarker([n.lat, n.lon], {radius: 5, color: n.abierto ? '#2b6cb0' : '#c62828', fillOpacity: .85})
+    .bindPopup(`<b>${n.nombre}</b><br>${n.categoria_principal} · ${n.estrellas} ★<br>${n.abierto ? 'Abierto' : 'Cerrado'} · ` +
+               `${fmt(n.vida.dias_negocio / 365, 1)} años de reseñas<br>${pct(n.sentimiento && n.sentimiento.pct_negativas)} de reseñas negativas`).addTo(capaZona));
+  const z = zs.resumen;
+  $('zona').innerHTML = !z || !z.negocios ? '<div class="card vacio">No hay restaurantes en 2 km.</div>' : `
+    <div class="grid2">
+      <div class="card mini"><div class="v">${fmt(z.negocios, 0)}</div><div class="l">restaurantes en 2 km</div></div>
+      <div class="card mini"><div class="v">${fmt(z.cierres, 0)}</div><div class="l">han cerrado</div></div>
+      <div class="card mini"><div class="v">${pct(z.tasa_cierre_anual, 2)}</div><div class="l">cierran al año${z.confiable ? '' : ' (pocos datos)'}</div></div>
+      <div class="card mini"><div class="v">${pct(z.pct_resenas_negativas)}</div><div class="l">reseñas negativas</div></div>
+    </div>
+    <div class="card">Estrellas promedio <b>${fmt(z.estrellas_medias, 2)}</b> · sentimiento medio <b>${fmt(z.sentimiento_medio, 2)}</b> (de −1 a 1) · ${fmt(z.resenas, 0)} reseñas</div>`;
+  const top = (rk.negocios || []).slice(0, 5);
+  $('riesgoCerca').classList.toggle('vacio', !top.length);
+  $('riesgoCerca').innerHTML = !top.length ? 'Sin restaurantes con datos de riesgo en 1 km.' : top.map(n => `
+    <div class="fila" data-lat="${n.lat}" data-lon="${n.lon}" data-nombre="${n.nombre}" data-info="${n.categoria_principal} · riesgo de cierre ${pct(n.probabilidad * 100, 0)}"><div>${n.nombre}<small>${n.categoria_principal}${n.alerta ? ' · en alerta' : ''}</small></div>
+    <div style="min-width:70px;text-align:right"><b>${pct(n.probabilidad * 100, 0)}</b><div class="barra"><i style="width:${Math.round(n.probabilidad * 100)}%"></i></div></div></div>`).join('');
+  enlazarFilas('riesgoCerca');
+}
+
+function enlazarFilas(id) {
+  $(id).querySelectorAll('.fila').forEach(f => f.onclick = () => {
+    const p = [+f.dataset.lat, +f.dataset.lon];
+    capaFoco.clearLayers();
+    mapa.setView(p, 16);
+    L.circleMarker(p, {radius: 16, color: '#e07b00', weight: 3, fill: false}).addTo(capaFoco);
+    L.circleMarker(p, {radius: 7, color: '#e07b00', fillColor: '#e07b00', fillOpacity: 1})
+      .bindPopup(`<b>${f.dataset.nombre}</b><br>${f.dataset.info}`).addTo(capaFoco).openPopup();
+  });
+}
+
+// ------------------------------------------------------------ en vivo
+async function vivo() {
+  try {
+    const [h, a, ev] = await Promise.all([getJ('/live/hotspots?limit=500'), getJ('/alerts?limit=500'), getJ('/live/evolucion')]);
+    $('kHot').textContent = fmt(h.hotspots, 0); $('kAle').textContent = fmt(a.total, 0);
+    $('kVivo').textContent = fmt((ev.evolucion || []).reduce((s, x) => s + x.resenas, 0), 0);
+    capaHot.clearLayers(); capaAlertas.clearLayers();
+    if ($('chkHot').checked) (h.ventanas || []).forEach(v => L.geoJSON(v.geometry, {pane: 'celdas', renderer: rendCeldas, style: {color: v.hotspot ? '#c62828' : '#888',
+      weight: v.hotspot ? 2 : 1, fillOpacity: Math.min(.55, .08 + v.pct_negativas / 150)},
+      onEachFeature: (f, capa) => capa.on('click', e => { L.DomEvent.stopPropagation(e); explorar(e.latlng); })})
+      .bindPopup(`<b>${v.hotspot ? 'HOTSPOT · ' : ''}Zona ${v.geohash}</b><br>Del ${v.inicio.slice(0, 10)} al ${v.fin.slice(0, 10)}<br>` +
+                 `${v.resenas} reseñas · ${pct(v.pct_negativas)} negativas<br>Ventana anterior: ${pct(v.pct_anterior)}`).addTo(capaHot));
+    if ($('chkAlertas').checked) (a.alertas || []).forEach(x => L.circleMarker([x.lat, x.lon], {radius: 7, color: '#e07b00', fillOpacity: .9})
+      .bindPopup(`<b>${x.nombre}</b><br>${x.categoria_principal}<br>Riesgo de cierre: <b>${pct(x.probabilidad * 100, 0)}</b><br>` +
+                 `Última reseña recibida: ${(x.fecha || '').slice(0, 10)}`).addTo(capaAlertas));
+    const top = (a.alertas || []).slice(0, 8);
+    $('listaAlertas').innerHTML = !top.length ? '<span class="vacio">Sin alertas todavía.</span>' : top.map(x => `
+      <div class="fila" data-lat="${x.lat}" data-lon="${x.lon}" data-nombre="${x.nombre}" data-info="${x.categoria_principal} · riesgo de cierre ${pct(x.probabilidad * 100, 0)}"><div>${x.nombre}<small>${x.categoria_principal} · ${(x.fecha || '').slice(0, 10)}</small></div>
+      <div style="min-width:70px;text-align:right"><b>${pct(x.probabilidad * 100, 0)}</b><div class="barra"><i style="width:${Math.round(x.probabilidad * 100)}%"></i></div></div></div>`).join('');
+    enlazarFilas('listaAlertas');
+    const pts = (ev.evolucion || []).filter(x => x.pct_negativas != null);
+    $('graEvol').innerHTML = pts.length < 2 ? '<span class="vacio">Sin datos todavía: inicie el productor.</span>' :
+      grafica([{nombre: '% negativas', color: '#c62828', p: pts.map((x, i) => [i, x.pct_negativas])}],
+              {xEt: pts.map(x => x.inicio.slice(2, 7)), yMax: Math.max(40, ...pts.map(x => x.pct_negativas)) , ySuf: ' %'});
+  } catch (e) { console.error(e); }
+}
+['chkAlertas', 'chkHot'].forEach(id => $(id).onchange = vivo);
+
+// ------------------------------------------------------------ supervivencia
+async function cargarVida() {
+  const comp = $('selVida').value;
+  try {
+    const r = await getJ(`/survival/todas?comparar=${comp}`);
+    const grupos = (r.grupos || []).filter(g => g.confiable);
+    if (!grupos.length) { $('graVida').innerHTML = '<span class="vacio">Sin curvas: corra spark-supervivencia.</span>'; return; }
+    const series = grupos.map((g, i) => ({nombre: g.nombre || g.grupo, color: COLORES[i % COLORES.length],
+      p: r.puntos.filter(p => p.grupo === (g.nombre || g.grupo) && p.anios <= 15).map(p => [p.anios, p.supervivencia * 100])}));
+    $('graVida').innerHTML = grafica(series, {xMax: 15, yMin: 0, yMax: 100, ySuf: ' %', escalon: true, xTit: 'años desde la primera reseña'});
+    $('tablaVida').innerHTML = '<div class="card">' + grupos.map((g, i) => `<div class="fila" style="cursor:default">
+      <div><span style="color:${COLORES[i % COLORES.length]}">●</span> ${g.nombre || g.grupo}<small>${fmt(g.negocios, 0)} restaurantes · ${fmt(g.cierres, 0)} cierres</small></div>
+      <div style="text-align:right"><b>${g.mediana_anios == null ? 'más de 15' : fmt(g.mediana_anios, 1)}</b><small>años de vida mediana</small></div></div>`).join('') + '</div>';
+  } catch (e) { console.error(e); }
+}
+$('selVida').onchange = cargarVida;
+
+// ------------------------------------------------------------ gráfica SVG sencilla
+function grafica(series, o = {}) {
+  const W = 360, H = 190, L0 = 34, R0 = 8, T0 = 8, B0 = 26;
+  const xs = series.flatMap(s => s.p.map(p => p[0]));
+  const xMin = o.xMin ?? Math.min(...xs), xMax = o.xMax ?? Math.max(...xs);
+  const yMin = o.yMin ?? 0, yMax = o.yMax ?? Math.max(...series.flatMap(s => s.p.map(p => p[1])));
+  const X = x => L0 + (x - xMin) / ((xMax - xMin) || 1) * (W - L0 - R0), Y = y => T0 + (1 - (y - yMin) / ((yMax - yMin) || 1)) * (H - T0 - B0);
+  let g = '';
+  for (let k = 0; k <= 4; k++) { const v = yMin + (yMax - yMin) * k / 4;
+    g += `<line x1="${L0}" x2="${W - R0}" y1="${Y(v)}" y2="${Y(v)}" stroke="currentColor" opacity=".12"/><text x="${L0 - 4}" y="${Y(v) + 3}" text-anchor="end">${Math.round(v)}${o.ySuf || ''}</text>`; }
+  if (o.xEt) { const paso = Math.ceil(o.xEt.length / 6); o.xEt.forEach((t, i) => { if (i % paso === 0) g += `<text x="${X(i)}" y="${H - 8}" text-anchor="middle">${t}</text>`; }); }
+  else { for (let k = 0; k <= 5; k++) { const v = xMin + (xMax - xMin) * k / 5; g += `<text x="${X(v)}" y="${H - 8}" text-anchor="middle">${Math.round(v)}</text>`; } }
+  series.forEach(s => {
+    let d = '';
+    s.p.forEach((p, i) => { d += i === 0 ? `M${X(p[0])},${Y(p[1])}` : (o.escalon ? `H${X(p[0])}V${Y(p[1])}` : `L${X(p[0])},${Y(p[1])}`); });
+    if (o.escalon && s.p.length) d += `H${X(xMax)}`;
+    g += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2"><title>${s.nombre}</title></path>`;
+  });
+  const tit = o.xTit ? `<div style="text-align:center;color:var(--muted);font-size:11px">${o.xTit}</div>` : '';
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="color:var(--fg)">${g}</svg>${tit}`;
+}
+
+// ------------------------------------------------------------ probar el modelo
+document.querySelectorAll('.ej').forEach(e => e.onclick = () => { $('txt').value = e.textContent; $('btn').click(); });
+$('btn').onclick = async () => {
   const r = await fetch('/predict', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                     body: JSON.stringify({texto: document.getElementById('txt').value})});
+                                     body: JSON.stringify({texto: $('txt').value})});
   const j = await r.json();
-  document.getElementById('pred').innerHTML = j.error ? j.error :
-    `<b>${j.sentimiento}</b> · ` + Object.entries(j.probabilidades).map(([k, v]) => `${k} ${fmt(v*100,1)} %`).join(' · ');
+  if (j.error) { $('pred').innerHTML = `<div class="card">${j.error}</div>`; return; }
+  const nombres = {positivo: 'Positiva', neutral: 'Neutral', negativo: 'Negativa'};
+  $('pred').innerHTML = `<div class="res ${j.sentimiento}">Reseña ${nombres[j.sentimiento] || j.sentimiento}</div>` +
+    Object.entries(j.probabilidades).map(([k, v]) => `<div style="margin-top:6px">${nombres[k] || k} · ${pct(v * 100, 0)}
+      <div class="barra"><i style="width:${Math.round(v * 100)}%;background:${k === 'positivo' ? 'var(--ok)' : k === 'negativo' ? 'var(--bad)' : 'var(--warn)'}"></i></div></div>`).join('');
 };
-cargarMeta();
+
+cargarMeta(); cargarEstado(); vivo();
+setInterval(vivo, 10000); setInterval(cargarEstado, 15000);
 </script>
 </body>
 </html>
