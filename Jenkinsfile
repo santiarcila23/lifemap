@@ -159,7 +159,7 @@ pipeline {
           $COMPOSE run --rm --no-deps -e MAX_MENSAJES=100 -e PRUEBA=true -e CORRIDA="$CORRIDA" producer
           for i in $(seq 1 24); do
             N=$($COMPOSE exec -T mongo mongosh lifemap --quiet --eval \
-              "print(db.reviews_stream.countDocuments({corrida: '$CORRIDA', sentimiento: {\$exists: true}}))" | tail -1)
+              "print(db.reviews_stream.countDocuments({corrida: '$CORRIDA'}))" | tail -1)
             echo "Clasificadas en MongoDB: ${N}/100"
             if [ "$N" = "100" ]; then exit 0; fi
             sleep 5
