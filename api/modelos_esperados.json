@@ -1,5 +1,5 @@
 {
-  "sentimiento": "sentiment_v2",
+  "sentimiento": "sentiment_v1",
   "riesgo": "riesgo_v1",
   "fecha_corte": "2021-01-01"
 }
